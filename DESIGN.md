@@ -8,7 +8,8 @@
 SportNav je natívna iOS aplikácia pre držiteľov Multisport karty. Umožňuje nájsť najbližšie akceptované športovisko na mape, filtrovať zariadenia podľa typu aktivity a jedným ťuknutím otvoriť navigáciu v externej mapovej aplikácii.
 
 **Platforma:** iOS 16+  
-**Distribúcia:** App Store  
+**Distribúcia:** iOS simulátor a vlastné zariadenie cez Xcode s bezplatným Apple ID (App Store vyžaduje platený Apple Developer Program, preto je mimo scope — viď §7)  
+**Náklady:** 0 € — žiadne platené služby, registrácie, API kľúče ani platobné karty  
 **Jazyk rozhrania:** SK, CZ, EN  
 **Backend:** žiadny — aplikácia beží plne offline nad lokálnou SQLite databázou
 
@@ -23,8 +24,9 @@ Aplikácia nemá vlastný server ani cloudový backend. Dáta o športoviskách 
 Apify Actor (scraper)
   → surové záznamy (názov, adresa, kategória)
   → Python enrich script
-      ├─ Apple Maps Server API  → GPS + otváracie hodiny
-      └─ Google Places API (fallback, dev only)
+      └─ OpenStreetMap Nominatim (zadarmo, bez kľúča)
+           ├─ 1. dotaz: názov + adresa → GPS + otváracie hodiny (OSM tag)
+           └─ 2. dotaz: iba adresa     → GPS budovy (ak 1. nič nenašiel)
   → export → venues.sqlite
 
 [PRODUKCIA – iOS aplikácia]
@@ -73,65 +75,55 @@ Používame hotový Actor [`janbuchar/multisport-map-scraper`](https://apify.com
 
 ---
 
-### 3.2 Enrich script – GPS a otváracie hodiny
+### 3.2 Enrich script – GPS a otváracie hodiny (OpenStreetMap Nominatim)
 
 #### Pravidlo nulových nákladov
-> Žiadne platené API volania. Všetky volania sú jednorazové počas vývoja. Do SQLite sa uloží výsledok — v produkcii sa žiadne API nevolá.
+> Žiadne platené služby, žiadne registrácie, žiadne API kľúče ani platobné karty. Všetky volania sú jednorazové počas vývoja. Do SQLite sa uloží výsledok — v produkcii sa žiadne API nevolá.
 
-#### Primárny zdroj: Apple Maps Server API (zadarmo)
+#### Zdroj: OpenStreetMap Nominatim
 
-Zadarmo v rámci Apple Developer Program. Prijíma názov + adresu, vracia GPS a otváracie hodiny.
+Verejný geocoder OpenStreetMap (`GET https://nominatim.openstreetmap.org/search`) — zadarmo, bez registrácie a bez kľúča. Apple Maps Server API (vyžaduje platený Apple Developer Program) a Google Places API (vyžaduje platobnú kartu) sa **nepoužívajú**.
+
+**Podmienky použitia (Nominatim Usage Policy) — povinné:**
+- najviac **1 požiadavka za sekundu**, žiadne paralelné požiadavky
+- identifikujúca hlavička `User-Agent: SportNav-data-import/1.0`; voliteľne parameter `email` (kontakt pre prevádzkovateľa) z premennej `NOMINATIM_EMAIL`
+- import je jednorazový, výsledok sa uloží do SQLite (žiadne opakované hromadné dopyty)
+- v aplikácii je uvedená atribúcia **„© OpenStreetMap contributors"** (dáta sú pod licenciou ODbL), viď §5.3
+
+**Dva dotazy na zariadenie:**
+
+| Fáza | `q` | Pri výsledku | `gps_source` |
+|---|---|---|---|
+| 1. POI | `"<title>, <street>, <city>"` | GPS + otváracie hodiny z `extratags.opening_hours` | `nominatim_poi` |
+| 2. adresa (iba ak 1. vrátila `[]`) | `"<street>, <city>"` | iba GPS budovy, otváracie hodiny ostanú prázdne | `nominatim_address` |
+| — (aj 2. vrátila `[]`) | — | `gps_pending = 1`, `lat`/`lon` = NULL | `NULL` |
+
+Prázdne časti dotazu (chýbajúca ulica alebo mesto) sa vynechajú. Ak zariadenie nemá ulicu ani mesto, fáza 2 sa preskočí.
+
+Spoločné parametre: `format=jsonv2`, `limit=1`, `extratags=1`, `countrycodes=cz,sk`, `accept-language=cs`.
 
 ```python
-async def enrich_venue_apple(venue: dict, token: str) -> dict:
-    query = f"{venue['title']} {venue['street']} {venue['city']}"
-    url = "https://maps-api.apple.com/v1/search"
-    params = {"q": query, "lang": "sk-SK", "resultTypeFilter": "Poi"}
-    headers = {"Authorization": f"Bearer {token}"}
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+USER_AGENT = "SportNav-data-import/1.0"
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers=headers, params=params)
-        data = resp.json()
-
-    if not data.get("results"):
-        return venue  # → fallback
-
-    place = data["results"][0]
-    venue["lat"] = place["center"]["lat"]
-    venue["lon"] = place["center"]["lng"]
-    venue["opening_hours"] = place.get("openingHours", {})
-    venue["gps_source"] = "apple_maps"
-    return venue
+async def nominatim_search(query: str, client: httpx.AsyncClient,
+                           email: str | None = None) -> dict | None:
+    params = {"q": query, "format": "jsonv2", "limit": 1, "extratags": 1,
+              "countrycodes": "cz,sk", "accept-language": "cs"}
+    if email:
+        params["email"] = email
+    resp = await client.get(NOMINATIM_URL, params=params,
+                            headers={"User-Agent": USER_AGENT})
+    resp.raise_for_status()
+    results = resp.json()
+    return results[0] if results else None
+    # pozor: "lat" a "lon" sú v odpovedi Nominatimu reťazce → float()
 ```
 
-#### Fallback: Google Places API (jednorazový dev import, $0 v rámci kreditu)
-
-```python
-async def enrich_venue_google_fallback(venue: dict) -> dict:
-    # Len ak Apple Maps nevrátil výsledok
-    # API kľúč existuje IBA v dev prostredí, nikdy v app bundle
-    query = f"{venue['title']} {venue['street']} {venue['city']}"
-    url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
-    params = {
-        "input": query,
-        "inputtype": "textquery",
-        "fields": "geometry,opening_hours",
-        "key": GOOGLE_API_KEY,
-    }
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, params=params)
-        data = resp.json()
-
-    candidates = data.get("candidates", [])
-    if not candidates:
-        return venue
-
-    place = candidates[0]
-    venue["lat"] = place["geometry"]["location"]["lat"]
-    venue["lon"] = place["geometry"]["location"]["lng"]
-    venue["opening_hours"] = place.get("opening_hours", {})
-    venue["gps_source"] = "google_places_fallback"
-    return venue
+**Ukážka odpovede (skrátená):**
+```json
+[{"lat": "50.3561", "lon": "15.9187", "name": "Legion Gym",
+  "extratags": {"opening_hours": "Mo-Fr 06:00-22:00; Sa,Su 08:00-20:00"}}]
 ```
 
 ---
@@ -150,7 +142,7 @@ CREATE TABLE venues (
     lon         REAL,     -- NULL iff gps_pending = 1
     phone       TEXT,
     website     TEXT,
-    gps_source  TEXT,
+    gps_source  TEXT,              -- 'nominatim_poi' | 'nominatim_address' | NULL
     gps_pending INTEGER DEFAULT 0  -- 1 ak GPS nebola nájdená
 );
 
@@ -204,7 +196,7 @@ View (SwiftUI)
 | Poloha & gyroskop | CoreLocation + CMMotionManager |
 | Lokálna DB | SQLite (cez `SQLite.swift` knižnicu) |
 | Navigácia (externá) | Deep link – `maps://`, `comgooglemaps://` |
-| CI/CD | Xcode Cloud |
+| CI/CD | žiadne — testy sa spúšťajú lokálne (Xcode Cloud vyžaduje platený Apple Developer Program) |
 | Verziovanie | Git + GitHub |
 
 ### 4.3 Oprávnenia (Info.plist)
@@ -247,6 +239,7 @@ Spustenie aplikácie
 - Modrá bodka = aktuálna poloha + gyroskop (smer pohľadu)
 - Piny farebne odlíšené podľa kategórie zariadenia
 - Pri oddialení sa piny zhlukujú (clustering)
+- Atribúcia dát: na karte zariadenia je pod otváracími hodinami malý text **„Poloha a hodiny: © OpenStreetMap contributors"** (povinné podľa licencie ODbL, §3.2)
 
 ### 5.4 Navigácia (externá)
 
@@ -316,6 +309,8 @@ Nasledujúce veci **nie sú súčasťou tejto aplikácie** a nebudú implementov
 - Skenovanie Multisport karty
 - Apple Watch companion app
 - Aktualizácia dát po vydaní aplikácie (nová verzia = nový import SQLite)
+- Publikovanie v App Store a Xcode Cloud (vyžadujú platený Apple Developer Program)
+- Akékoľvek platené API alebo API vyžadujúce kľúč či platobnú kartu (Apple Maps Server API, Google Places API)
 
 ---
 
@@ -325,16 +320,26 @@ Rozhodnutia, ktoré dopĺňajú alebo spresňujú sekcie 3–6. Pri rozpore plat
 
 1. **Zariadenia bez GPS** — `lat`/`lon` sú v SQLite `NULL` a `gps_pending = 1`. `VenueRepository` načítava iba záznamy s `gps_pending = 0`, preto `Venue.coordinate` ostáva neoptional.
 2. **Kategórie** — scraper vracia názvy kategórií (napr. `"Posilovny a silové tréninky"`), nie slugy. Backend obsahuje statickú mapu *názov → slug* pre 7 kategórií z `VenueCategory` (§6). Tabuľka `categories` sa naplní práve týmito 7 riadkami. Neznáma kategória sa zaloguje a preskočí, zariadenie sa však uloží.
-3. **Apple Maps token** — vývojár dodá *Maps auth token* (JWT z Apple Developer portálu) v premennej prostredia `APPLE_MAPS_AUTH_TOKEN`. Pipeline ho jedenkrát vymení cez `GET https://maps-api.apple.com/v1/token` za access token, ktorý sa potom posiela do `enrich_venue_apple`.
-4. **Google fallback** — volá sa iba vtedy, keď Apple Maps nevráti žiadny výsledok. Endpoint *Find Place* vracia v `opening_hours` iba `open_now`, čo je pre offline aplikáciu nepoužiteľné, preto fallback dopĺňa **iba GPS** (`fields=geometry`). Otváracie hodiny ostanú prázdne. Kľúč je v premennej `GOOGLE_API_KEY`. Ak kľúč chýba, fallback sa preskočí.
-5. **Otváracie hodiny** — funkcia `normalize_opening_hours` prevedie odpoveď API na zoznam `(day, opens, closes)` s `day ∈ {mon,…,sun}` a časom vo formáte `HH:MM`. Ak štruktúru nevie spracovať, vráti prázdny zoznam (bez výnimky). V aplikácii sa zobrazujú dnešné hodiny, prípadne text „Otváracie hodiny nedostupné".
+3. **Žiadne kľúče** — pipeline nepotrebuje žiadny kľúč ani token. Jediná voliteľná premenná je `NOMINATIM_EMAIL` (kontaktný e-mail posielaný Nominatimu podľa usage policy). Načítava sa z prostredia alebo z `backend/.env`; ak chýba, parameter `email` sa neposiela. E-mail sa nikdy nevypisuje do logov.
+4. **Rýchlosť a poradie** — `enrich_all` spracúva zariadenia **sekvenčne** (žiadna súbežnosť) a zachováva ich poradie. Medzi začiatkami dvoch po sebe idúcich požiadaviek na Nominatim v rámci jedného behu `enrich_all` uplynie aspoň `min_interval` sekúnd (predvolene `1.0`; testy používajú `0` alebo malú hodnotu). Platí to aj pre dve požiadavky toho istého zariadenia (fáza 1 a 2).
+5. **Otváracie hodiny** — `normalize_opening_hours(raw)` prevedie hodnotu OSM tagu `opening_hours` (reťazec) na zoznam `(day, opens, closes)` s `day ∈ {mon,…,sun}` a časom `HH:MM`, zoradený podľa dňa (po → ne) a času otvorenia. Funkcia nikdy nevyhodí výnimku. Podporovaná podmnožina syntaxe OSM:
+   - `24/7` → všetkých 7 dní `00:00–23:59`
+   - pravidlá oddelené `;`; pravidlo = `[výber dní] časy` alebo `[výber dní] off` / `closed`
+   - výber dní: dni `Mo Tu We Th Fr Sa Su`, rozsahy (`Mo-Fr`, aj cez koniec týždňa `Sa-Mo`) a zoznamy (`Mo,We,Fr-Su`); bez výberu dní platí pravidlo pre všetky dni
+   - časy: jeden alebo viac rozsahov `HH:MM-HH:MM` oddelených čiarkou; `24:00` ako čas zatvorenia sa zapíše ako `23:59`; `closes < opens` znamená prevádzku cez polnoc (§8.10)
+   - neskoršie pravidlo **nahrádza** skoršie pre dni, ktoré vyberá (sémantika OSM); `off` / `closed` tieto dni vyprázdni
+   - čokoľvek iné (sviatky `PH`/`SH`, mesiace, týždne, `sunrise`/`sunset`, komentáre v úvodzovkách, `+`, `||`, čas nad `24:00`, pravidlá oddelené čiarkou, …) → celý výsledok je `[]` (všetko alebo nič)
+   - `None`, iný typ ako reťazec alebo prázdny reťazec → `[]`
+
+   V aplikácii sa zobrazujú dnešné hodiny, prípadne text „Otváracie hodiny nedostupné".
 6. **Mapa** — SwiftUI `Map` na iOS 16 nepodporuje clustering, preto je mapa implementovaná ako `UIViewRepresentable` nad `MKMapView`: `MKMarkerAnnotationView` s `clusteringIdentifier` a `userTrackingMode = .followWithHeading` pre smer pohľadu. Smer sa berie z `CLLocationManager` heading, `CMMotionManager` sa nepoužije.
 7. **Filter** — prázdny výber kategórií znamená „všetky". Predvolená vzdialenosť je 5 km, rozsah 0,5–20 km (krok 0,5 km). Vzdialenosť sa počíta cez `CLLocation.distance(from:)`. Ak používateľ nepovolí polohu, mapa sa vycentruje na oblasť všetkých zariadení a filter vzdialenosti sa vypne.
 8. **Xcode projekt** — vytvára ho človek ručne v Xcode 16+ (viď §10, krok 4). Používa *synchronized folders*, takže nové `.swift` súbory v `frontend/SportNav/` sa do projektu pridávajú automaticky a agenti nemusia upravovať `project.pbxproj`.
-9. **Chyby Apple Maps a strop Google** (spresňuje §8.4, pravidlo nulových nákladov §3.2) — „Apple nevráti žiadny výsledok" znamená **úspešnú odpoveď (HTTP 200) s prázdnym `results`**. Iba vtedy sa volá Google fallback.
-   - **401 / 403** z Apple search → `AppleAuthError`. `enrich_all` raz obnoví access token cez `get_apple_access_token(apple_auth_token, client)` (ak je `apple_auth_token` zadaný) a zariadenie zopakuje; ak chyba pretrvá alebo obnova nie je možná, **celý beh sa ukončí výnimkou `AppleAuthError`** (žiadne volania Google za zvyšné zariadenia).
-   - **429, 5xx, timeout, nevalidný JSON alebo JSON, ktorý nie je objekt** pre jedno zariadenie → zariadenie sa označí `gps_pending = 1` **bez volania Google**, chyba sa zaloguje a beh pokračuje.
-   - **Strop Google** — `enrich_all(..., max_google_calls=500)`. Po dosiahnutí stropu sa ďalšie zariadenia bez Apple výsledku označia `gps_pending = 1` bez volania Google a raz sa zaloguje varovanie.
+9. **Chyby Nominatimu** — „Nominatim nič nenašiel" znamená **HTTP 200 s prázdnym JSON poľom `[]`**. Iba vtedy sa pokračuje ďalšou fázou (§3.2).
+   - **HTTP 403** (IP zablokovaná za porušenie usage policy) → `NominatimBlockedError`; **celý beh sa okamžite ukončí** a už sa neposiela žiadna ďalšia požiadavka. `build_db.py` vypíše chybu a skončí s kódom 1 bez zápisu databázy.
+   - **429, iné 4xx/5xx, timeout, chyba spojenia, nevalidný JSON alebo JSON, ktorý nie je pole** → toto zariadenie sa označí `gps_pending = 1` **bez ďalšej fázy**, chyba sa zaloguje a beh pokračuje ďalším zariadením.
+   - Výsledok bez platných súradníc (`lat`/`lon` chýba, nedá sa previesť na `float` alebo je mimo rozsahu ±90 / ±180) sa posudzuje ako prázdny výsledok danej fázy.
+   - Výnimky httpx sa logujú iba typom a HTTP kódom (bez URL), aby sa do logu nedostal `NOMINATIM_EMAIL`.
 10. **Zápis otváracích hodín v SQLite** (spresňuje §8.5, platí pre backend aj iOS) — jeden riadok `(day, opens, closes)` popisuje jeden blok otvorenia, ktorý **začína v deň `day`**. Ak je `closes < opens`, prevádzka končí po polnoci **nasledujúceho dňa** (napr. `fri 22:00–02:00` = piatok 22:00 až sobota 02:00). Nonstop prevádzka je 7 riadkov `00:00–23:59`. V jeden deň môže byť viac riadkov (prestávka). Viacdňové súvislé obdobia sa nezapisujú. iOS pri „dnešných hodinách" zobrazí riadky pre dnešný deň a pri `closes < opens` bez ďalšej úpravy zobrazí rozsah `opens–closes`. Stav „otvorené teraz" MVP nepočíta.
 11. **`street` a `city` v Swifte** (spresňuje §6 vs. §3.3) — SQLite môže obsahovať NULL (exportér ukladá prázdne reťazce ako NULL). `Venue.street` a `Venue.city` ostávajú neoptional `String`; `SQLiteVenueRepository` mapuje NULL na `""` a UI prázdne hodnoty nezobrazí.
 
@@ -347,20 +352,20 @@ Rozhodnutia, ktoré dopĺňajú alebo spresňujú sekcie 3–6. Pri rozpore plat
 ```
 backend/
 ├── requirements.txt              # httpx, pytest
-├── .env.example                  # APPLE_MAPS_AUTH_TOKEN=, GOOGLE_API_KEY=
+├── .env.example                  # NOMINATIM_EMAIL=   (voliteľné, §8.3)
 ├── data/
 │   └── venues_raw.json           # export z Apify Actora (ukladá človek v kroku 9)
 ├── sportnav_data/
 │   ├── __init__.py
 │   ├── categories.py             # CATEGORY_SLUGS: dict[názov, slug], CATEGORIES: list[(slug, name)]
-│   ├── opening_hours.py          # normalize_opening_hours(raw) -> list[tuple[str, str, str]]
-│   ├── enrich.py                 # get_apple_access_token, enrich_venue_apple,
-│   │                             # enrich_venue_google_fallback, enrich_venue, enrich_all
+│   ├── opening_hours.py          # normalize_opening_hours(raw) -> list[tuple[str, str, str]] (OSM syntax, §8.5)
+│   ├── enrich.py                 # nominatim_search, enrich_venue, enrich_all, NominatimBlockedError
 │   └── export.py                 # create_schema(conn), export_venues(venues, path)
 ├── scripts/
-│   └── build_db.py               # CLI: --input data/venues_raw.json --output <cesta>.sqlite
+│   ├── build_db.py               # CLI: --input data/venues_raw.json --output <cesta>.sqlite
+│   └── make_test_fixture.py      # vytvorí frontend/SportNavTests/Fixtures/test_venues.sqlite
 └── tests/
-    ├── fixtures/                 # vzorové odpovede Apple / Google / Apify
+    ├── fixtures/                 # vzorové odpovede Nominatim (nominatim_*.json)
     ├── test_categories.py
     ├── test_opening_hours.py
     ├── test_enrich.py
@@ -372,22 +377,23 @@ Koreňový `.gitignore`: `backend/.env`, `__pycache__/`, `.pytest_cache/`, `*.py
 **Rozhrania (Python):**
 
 ```python
-async def get_apple_access_token(auth_token: str, client: httpx.AsyncClient) -> str
-async def enrich_venue_apple(venue: dict, token: str, client: httpx.AsyncClient) -> dict
-async def enrich_venue_google_fallback(venue: dict, api_key: str, client: httpx.AsyncClient) -> dict
-async def enrich_venue(venue: dict, apple_token: str, google_key: str | None,
-                       client: httpx.AsyncClient) -> dict   # Apple → Google → gps_pending
-async def enrich_all(venues: list[dict], apple_token: str, google_key: str | None,
-                     client: httpx.AsyncClient, concurrency: int = 5,
-                     apple_auth_token: str | None = None,
-                     max_google_calls: int = 500) -> list[dict]   # §8.9
-class AppleAuthError(Exception)   # 401/403 z Apple, §8.9
-def normalize_opening_hours(raw: object) -> list[tuple[str, str, str]]
+class NominatimBlockedError(Exception)                          # HTTP 403, ukončí beh (§8.9)
+async def nominatim_search(query: str, client: httpx.AsyncClient,
+                           email: str | None = None) -> dict | None   # prvý výsledok alebo None pri []
+async def enrich_venue(venue: dict, client: httpx.AsyncClient, email: str | None = None,
+                       min_interval: float = 1.0) -> dict         # POI → adresa → gps_pending (§3.2)
+async def enrich_all(venues: list[dict], client: httpx.AsyncClient, email: str | None = None,
+                     min_interval: float = 1.0) -> list[dict]     # sekvenčne, poradie zachované (§8.4)
+def normalize_opening_hours(raw: object) -> list[tuple[str, str, str]]   # OSM syntax (§8.5)
 def create_schema(conn: sqlite3.Connection) -> None          # schéma §3.3
 def export_venues(venues: list[dict], path: str) -> None     # vytvorí schému a zapíše dáta
 ```
 
-`httpx.AsyncClient` sa do funkcií odovzdáva parametrom (oproti ukážkam v §3.2), aby sa dal v testoch nahradiť cez `httpx.MockTransport`. Obohatený záznam má navyše kľúče `lat`, `lon`, `opening_hours` (normalizovaný zoznam), `gps_source` (`apple_maps` | `google_places_fallback` | `None`) a `gps_pending` (0/1).
+`httpx.AsyncClient` sa do funkcií odovzdáva parametrom, aby sa dal v testoch nahradiť cez `httpx.MockTransport`. Obohatený záznam má navyše kľúče `lat`, `lon` (`float` alebo `None`), `opening_hours` (normalizovaný zoznam), `gps_source` (`nominatim_poi` | `nominatim_address` | `None`) a `gps_pending` (0/1). Vstupný záznam sa nemení (funkcie vracajú kópiu).
+
+`build_db.py` (CLI): nevyžaduje žiadnu premennú prostredia; voliteľne načíta `NOMINATIM_EMAIL` (z prostredia alebo `backend/.env`). Pred prvou požiadavkou overí zapisovateľnosť výstupu. Po dokončení vypíše štatistiku: počet záznamov, počet a podiel `gps_pending`, počty podľa `gps_source`, počet zariadení bez kategórie, počty podľa kategórie a varovanie pri podiele `gps_pending` nad 10 % (§12). Pri `NominatimBlockedError` skončí s kódom 1 bez zápisu databázy.
+
+`make_test_fixture.py` a `frontend/SportNavTests/Fixtures/test_venues.sqlite` sa pri prechode na Nominatim **nemenia** (hodnoty `gps_source` vo fixture sú iba informatívne, iOS ich nečíta). Zmena by zbytočne kolidovala s rozpracovaným krokom 5.
 
 ### 9.2 Frontend — iOS aplikácia (Swift 5.9+, iOS 16+)
 
@@ -465,16 +471,17 @@ Každý krok sa dá samostatne implementovať a overiť príkazom `/implement DE
 | # | Krok | Kto | Výstup | Overenie |
 |---|---|---|---|---|
 | 1 | **Backend základ** — `requirements.txt`, `.env.example`, koreňový `.gitignore`, `sportnav_data/__init__.py`, `categories.py`, `opening_hours.py` + testy | agent | moduly §9.1 | `pytest` (categories, opening_hours) |
-| 2 | **Enrich** — `enrich.py`: Apple token, Apple search, Google fallback, `gps_pending`, `enrich_all` s obmedzením súbežnosti + testy s `httpx.MockTransport` | agent | `enrich.py` | `pytest` (bez reálnej siete) |
+| 2 | **Enrich** — `enrich.py`: Nominatim (POI → adresa → `gps_pending`), sekvenčný `enrich_all` s `min_interval` + testy s `httpx.MockTransport` | agent | `enrich.py` | `pytest` (bez reálnej siete) |
 | 3 | **Export + CLI** — `export.py` (schéma presne podľa §3.3), `scripts/build_db.py`, testovacia fixture DB `frontend/SportNavTests/Fixtures/test_venues.sqlite` + testy | agent | `export.py`, `build_db.py`, fixture DB | `pytest` |
+| 3a | **Prechod na Nominatim** (refaktor už implementovaných krokov 1–3; pôvodne Apple Maps + Google Places) — prepísať `sportnav_data/enrich.py` (§3.2, §8.3, §8.4, §8.9, §9.1), `sportnav_data/opening_hours.py` (OSM syntax, §8.5), `scripts/build_db.py` (§9.1), `.env.example`, `backend/README.md`; nahradiť testy `tests/test_enrich.py`, `tests/test_opening_hours.py` a časť `# --- build_db CLI` v `tests/test_export.py` (§11.1); odstrániť fixtures `apple_*.json` / `google_*.json` a pridať `nominatim_*.json`. Vo zvyšku `tests/test_export.py` (testy exportu) sa smú zmeniť iba vzorové hodnoty `gps_source` (`apple_maps` → `nominatim_poi`). **Nemeniť:** `categories.py`, `export.py`, schému §3.3, `make_test_fixture.py`, fixture DB ani nič vo `frontend/`. Mimo `make_test_fixture.py` (jeho hodnoty `gps_source` sú historické a informatívne, §9.1) nesmie v `backend/` ostať žiadna zmienka o Apple Maps Server API, Google Places, `APPLE_MAPS_AUTH_TOKEN` ani `GOOGLE_API_KEY`. | agent | §9.1 | `pytest` |
 | 4 | **Xcode projekt** — Xcode 16+ → iOS App, SwiftUI, názov `SportNav`, uložiť do `frontend/`, deployment target iOS 16, unit test target `SportNavTests`, SPM balík `SQLite.swift`. Commitnúť. | **človek (macOS)** | `frontend/SportNav.xcodeproj` | projekt sa zbuildí v Xcode |
 | 5 | **Modely + Repository** — `Venue.swift`, `VenueCategory.swift` (displayName, color, SF Symbol ikona), `VenueRepository.swift` + testy nad fixture DB | agent (macOS) | §9.2 Models, Data | `xcodebuild test` |
 | 6 | **Služby** — `LocationService.swift`, `NavigationService.swift` (§5.4, §8.6) + testy NavigationService | agent (macOS) | §9.2 Services | `xcodebuild test` |
 | 7 | **ViewModel** — `FilterState`, `MapViewModel` (filter podľa kategórie a vzdialenosti, §8.7) + testy | agent (macOS) | §9.2 ViewModels | `xcodebuild test` |
-| 8 | **UI** — `MapScreen`, `VenueMapView` (clustering, heading, farby pinov), `FilterSheet`, `VenueCardSheet`, `Info.plist` (§4.3), `Localizable.xcstrings` (sk/cs/en) | agent (macOS) | §9.2 Views, Resources | `xcodebuild build` + manuálny checklist §11.3 |
-| 9 | **Reálne dáta** — spustiť Apify Actor, uložiť `backend/data/venues_raw.json`, spustiť `python scripts/build_db.py --input data/venues_raw.json --output ../frontend/SportNav/Resources/venues.sqlite` s reálnymi kľúčmi | **človek** | `venues.sqlite` v bundli | počet záznamov, podiel `gps_pending` (§12) |
+| 8 | **UI** — `MapScreen`, `VenueMapView` (clustering, heading, farby pinov), `FilterSheet`, `VenueCardSheet` (vrátane OSM atribúcie, §5.3), `Info.plist` (§4.3), `Localizable.xcstrings` (sk/cs/en) | agent (macOS) | §9.2 Views, Resources | `xcodebuild build` + manuálny checklist §11.3 |
+| 9 | **Reálne dáta** — spustiť Apify Actor v bezplatnom účte Apify (webová konzola, bez tokenu), uložiť `backend/data/venues_raw.json`, spustiť `cd backend && python scripts/build_db.py --input data/venues_raw.json --output ../frontend/SportNav/Resources/venues.sqlite` (beží ~2 s na zariadenie kvôli limitu 1 požiadavka/s) | **človek** | `venues.sqlite` v bundli | počet záznamov, podiel `gps_pending` (§12) |
 
-Kroky 1–3 sa dajú robiť na Windows aj macOS. Kroky 5–8 vyžadujú macOS s Xcode.
+Kroky 1–3 a 3a sa dajú robiť na Windows aj macOS. Kroky 5–8 vyžadujú macOS s Xcode.
 
 ---
 
@@ -489,8 +496,9 @@ Testy nesmú volať reálnu sieť. HTTP sa simuluje cez `httpx.MockTransport` s 
 | Oblasť | Testované prípady |
 |---|---|
 | `categories` | všetkých 7 názvov → správny slug; neznámy názov → preskočený (log), zariadenie ostáva |
-| `opening_hours` | Google `periods` formát → `("mon", "06:00", "22:00")`; nočná prevádzka cez polnoc; `None` / neznámy formát → `[]` bez výnimky |
-| `enrich` | Apple vráti výsledok → `gps_source = "apple_maps"`; Apple prázdne → Google fallback; oba prázdne → `gps_pending = 1`, `lat/lon = None`; chýba `GOOGLE_API_KEY` → fallback sa nevolá; HTTP chyba (5xx/timeout) pri jednom zariadení nezhodí celý beh a zariadenie je `gps_pending` bez volania Google; Apple 401/403 → jedna obnova tokenu, potom `AppleAuthError` a žiadne ďalšie volania Google; strop `max_google_calls` sa dodrží; otváracie hodiny z Apple prežijú cez `enrich_venue` aj `enrich_all` (§8.9) |
+| `opening_hours` | `"Mo-Fr 06:00-22:00; Sa,Su 08:00-20:00"` → 7 riadkov; `"24/7"`; viac rozsahov v jeden deň (`"Mo-Su 10:00-14:00,16:00-22:00"`); cez polnoc (`"Fr 22:00-02:00"` → `("fri", "22:00", "02:00")`); `24:00` → `23:59`; rozsah cez koniec týždňa (`"Sa-Mo …"`); pravidlo bez dní; neskoršie pravidlo prepíše skoršie a `off` vyprázdni deň (`"Mo-Fr 08:00-20:00; We off"`); nepodporovaná syntax (`"Mo-Fr 08:00-17:00; PH off"`, `"sunrise-sunset"`, čiarkou oddelené pravidlá) → `[]`; `None` / číslo / `""` → `[]` bez výnimky |
+| `enrich` | POI výsledok → `gps_source = "nominatim_poi"`, `lat`/`lon` ako `float`, hodiny z `extratags.opening_hours`; POI `[]` → adresný dotaz → `nominatim_address` bez hodín (aj keď adresný výsledok má `extratags.opening_hours`); oba `[]` → `gps_pending = 1`, `lat/lon = None`; chýbajúca ulica aj mesto → bez adresného dotazu; overenie odoslaných parametrov (`q`, `format=jsonv2`, `limit=1`, `extratags=1`, `countrycodes=cz,sk`) a hlavičky `User-Agent`; `email` sa posiela iba ak je zadaný; 429 / 5xx / timeout / nevalidný JSON / JSON, ktorý nie je pole → `gps_pending` bez adresného dotazu a beh pokračuje; neplatné súradnice → prázdny výsledok fázy; 403 → `NominatimBlockedError` a žiadne ďalšie požiadavky; poradie výsledkov `enrich_all` = poradie vstupu; žiadne súbežné požiadavky a odstup ≥ `min_interval` medzi požiadavkami (meraný v teste s malým `min_interval`); vstupný záznam sa nezmení |
+| `build_db` | beh bez akejkoľvek premennej prostredia; `NOMINATIM_EMAIL` z `.env` sa použije a nevypíše; štatistika vrátane počtov podľa `gps_source`; `NominatimBlockedError` → kód 1 a výstupný súbor sa nevytvorí; nezapisovateľný výstup → chyba pred prvou požiadavkou |
 | `export` | vytvorené tabuľky a index presne podľa §3.3; počty riadkov sedia; `venue_categories` a `opening_hours` sú prepojené správnymi `venue_id`; `gps_pending = 1` ⇔ `lat IS NULL` |
 
 ### 11.2 iOS (XCTest)
@@ -507,7 +515,7 @@ Príkaz: `cd frontend && xcodebuild test -scheme SportNav -destination 'platform
 
 - prvé spustenie → systémový dialóg polohy; po zamietnutí sa mapa zobrazí bez pádu
 - piny sú farebne odlíšené a pri oddialení sa zhlukujú
-- ťuknutie na pin → karta s názvom, kategóriou, vzdialenosťou a hodinami
+- ťuknutie na pin → karta s názvom, kategóriou, vzdialenosťou, hodinami a atribúciou „© OpenStreetMap contributors"
 - „Navigovať" → priame otvorenie (1 aplikácia) alebo action sheet (viac aplikácií)
 - filter mení piny na mape; jazyk aplikácie sk/cs/en
 
@@ -518,11 +526,14 @@ Príkaz: `cd frontend && xcodebuild test -scheme SportNav -destination 'platform
 | Riziko | Dopad | Mitigácia |
 |---|---|---|
 | iOS build a testy (kroky 5–8) vyžadujú macOS + Xcode | na Windows sa nedajú overiť | kroky 5–8 spúšťať iba na macOS; backend (kroky 1–3) je multiplatformový |
-| Apple Maps Server API nevracia otváracie hodiny alebo ich vracia v inom formáte | prázdne hodiny v aplikácii | pred krokom 9 uložiť reálnu odpoveď do `tests/fixtures/` a podľa nej doplniť `normalize_opening_hours`; UI zobrazí „nedostupné" |
-| Nesprávny geocoding (prvý výsledok vyhľadávania nie je hľadané zariadenie) | pin na zlom mieste | `resultTypeFilter=Poi`; po kroku 9 ručne skontrolovať vzorku ~20 zariadení |
-| Vysoký podiel `gps_pending` | menej zariadení na mape | `build_db.py` vypíše štatistiku; ak je podiel nad 10 %, doplniť ďalšie dotazy (iba adresa) v novej iterácii návrhu |
-| Limity / poplatky Google Places | porušenie pravidla nulových nákladov | fallback iba pre zariadenia bez Apple výsledku a iba `fields=geometry`; pred krokom 9 skontrolovať free tier |
+| OSM má otváracie hodiny iba pri časti zariadení, alebo v nepodporovanej syntaxi | prázdne hodiny v aplikácii | UI zobrazí „Otváracie hodiny nedostupné"; podporovaná podmnožina syntaxe (§8.5) pokrýva bežné zápisy; rozšírenie parsera je samostatná iterácia návrhu |
+| Nominatim nenájde zariadenie podľa názvu (POI v OSM chýba alebo má iný názov) | pin na adrese budovy namiesto presného miesta | adresný dotaz (fáza 2) — pin je aspoň na správnej budove; `gps_source = nominatim_address` umožní tieto prípady spočítať |
+| Nesprávny geocoding (prvý výsledok nie je hľadané zariadenie) | pin na zlom mieste | `countrycodes=cz,sk`; po kroku 9 ručne skontrolovať vzorku ~20 zariadení |
+| Vysoký podiel `gps_pending` | menej zariadení na mape | `build_db.py` vypíše štatistiku; ak je podiel nad 10 %, ďalšie stratégie dotazov patria do novej iterácie návrhu |
+| Porušenie usage policy Nominatimu (príliš rýchle požiadavky) → zablokovanie IP (HTTP 403) | import sa nedokončí | sekvenčné požiadavky s odstupom ≥ 1 s, `User-Agent`, okamžité ukončenie pri 403 (§8.9); import spúšťať iba raz |
+| Licencia ODbL — databáza obsahuje dáta z OSM | povinnosť atribúcie | text „© OpenStreetMap contributors" na karte zariadenia (§5.3); pri verejnom šírení `venues.sqlite` platí aj share-alike ODbL |
+| Dlhý beh importu (limit 1 požiadavka/s, až 2 dotazy na zariadenie) | pri ~3 000 zariadeniach 1–2 hodiny | jednorazový import (krok 9); priebeh sa loguje |
 | Dáta zo `mapa.multisport.cz` sú prevažne české | málo zariadení na Slovensku | po kroku 9 overiť pokrytie SK; prípadný ďalší zdroj patrí do novej verzie návrhu (mimo scope) |
 | Zmena štruktúry webu Multisport → scraper prestane fungovať | nedá sa vytvoriť nový import | dáta sú v aplikácii zabudované, výpadok scrapera ovplyvní iba ďalšiu verziu |
 | Mapovanie názov kategórie → slug je ručné | zariadenia bez kategórie | test v kroku 1 + log neznámych kategórií v `build_db.py` |
-| Únik API kľúčov | zneužitie kľúča | kľúče iba v `backend/.env` (v `.gitignore`), nikdy vo `frontend/` |
+| Únik kontaktného e-mailu (`NOMINATIM_EMAIL`) | e-mail v gite alebo logoch | iba v `backend/.env` (v `.gitignore`), nikdy sa nelogovať (§8.9) |
