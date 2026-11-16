@@ -331,6 +331,10 @@ Rozhodnutia, ktoré dopĺňajú alebo spresňujú sekcie 3–6. Pri rozpore plat
 6. **Mapa** — SwiftUI `Map` na iOS 16 nepodporuje clustering, preto je mapa implementovaná ako `UIViewRepresentable` nad `MKMapView`: `MKMarkerAnnotationView` s `clusteringIdentifier` a `userTrackingMode = .followWithHeading` pre smer pohľadu. Smer sa berie z `CLLocationManager` heading, `CMMotionManager` sa nepoužije.
 7. **Filter** — prázdny výber kategórií znamená „všetky". Predvolená vzdialenosť je 5 km, rozsah 0,5–20 km (krok 0,5 km). Vzdialenosť sa počíta cez `CLLocation.distance(from:)`. Ak používateľ nepovolí polohu, mapa sa vycentruje na oblasť všetkých zariadení a filter vzdialenosti sa vypne.
 8. **Xcode projekt** — vytvára ho človek ručne v Xcode 16+ (viď §10, krok 4). Používa *synchronized folders*, takže nové `.swift` súbory v `frontend/SportNav/` sa do projektu pridávajú automaticky a agenti nemusia upravovať `project.pbxproj`.
+9. **Chyby Apple Maps a strop Google** (spresňuje §8.4, pravidlo nulových nákladov §3.2) — „Apple nevráti žiadny výsledok" znamená **úspešnú odpoveď (HTTP 200) s prázdnym `results`**. Iba vtedy sa volá Google fallback.
+   - **401 / 403** z Apple search → `AppleAuthError`. `enrich_all` raz obnoví access token cez `get_apple_access_token(apple_auth_token, client)` (ak je `apple_auth_token` zadaný) a zariadenie zopakuje; ak chyba pretrvá alebo obnova nie je možná, **celý beh sa ukončí výnimkou `AppleAuthError`** (žiadne volania Google za zvyšné zariadenia).
+   - **429, 5xx, timeout, nevalidný JSON alebo JSON, ktorý nie je objekt** pre jedno zariadenie → zariadenie sa označí `gps_pending = 1` **bez volania Google**, chyba sa zaloguje a beh pokračuje.
+   - **Strop Google** — `enrich_all(..., max_google_calls=500)`. Po dosiahnutí stropu sa ďalšie zariadenia bez Apple výsledku označia `gps_pending = 1` bez volania Google a raz sa zaloguje varovanie.
 
 ---
 
@@ -372,7 +376,10 @@ async def enrich_venue_google_fallback(venue: dict, api_key: str, client: httpx.
 async def enrich_venue(venue: dict, apple_token: str, google_key: str | None,
                        client: httpx.AsyncClient) -> dict   # Apple → Google → gps_pending
 async def enrich_all(venues: list[dict], apple_token: str, google_key: str | None,
-                     client: httpx.AsyncClient, concurrency: int = 5) -> list[dict]
+                     client: httpx.AsyncClient, concurrency: int = 5,
+                     apple_auth_token: str | None = None,
+                     max_google_calls: int = 500) -> list[dict]   # §8.9
+class AppleAuthError(Exception)   # 401/403 z Apple, §8.9
 def normalize_opening_hours(raw: object) -> list[tuple[str, str, str]]
 def create_schema(conn: sqlite3.Connection) -> None          # schéma §3.3
 def export_venues(venues: list[dict], path: str) -> None     # vytvorí schému a zapíše dáta
@@ -481,7 +488,7 @@ Testy nesmú volať reálnu sieť. HTTP sa simuluje cez `httpx.MockTransport` s 
 |---|---|
 | `categories` | všetkých 7 názvov → správny slug; neznámy názov → preskočený (log), zariadenie ostáva |
 | `opening_hours` | Google `periods` formát → `("mon", "06:00", "22:00")`; nočná prevádzka cez polnoc; `None` / neznámy formát → `[]` bez výnimky |
-| `enrich` | Apple vráti výsledok → `gps_source = "apple_maps"`; Apple prázdne → Google fallback; oba prázdne → `gps_pending = 1`, `lat/lon = None`; chýba `GOOGLE_API_KEY` → fallback sa nevolá; HTTP chyba (5xx/timeout) pri jednom zariadení nezhodí celý beh |
+| `enrich` | Apple vráti výsledok → `gps_source = "apple_maps"`; Apple prázdne → Google fallback; oba prázdne → `gps_pending = 1`, `lat/lon = None`; chýba `GOOGLE_API_KEY` → fallback sa nevolá; HTTP chyba (5xx/timeout) pri jednom zariadení nezhodí celý beh a zariadenie je `gps_pending` bez volania Google; Apple 401/403 → jedna obnova tokenu, potom `AppleAuthError` a žiadne ďalšie volania Google; strop `max_google_calls` sa dodrží; otváracie hodiny z Apple prežijú cez `enrich_venue` aj `enrich_all` (§8.9) |
 | `export` | vytvorené tabuľky a index presne podľa §3.3; počty riadkov sedia; `venue_categories` a `opening_hours` sú prepojené správnymi `venue_id`; `gps_pending = 1` ⇔ `lat IS NULL` |
 
 ### 11.2 iOS (XCTest)
