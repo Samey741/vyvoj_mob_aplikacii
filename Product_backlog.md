@@ -34,10 +34,10 @@
 
 | # | Task | Zodpovedný | Odhad |
 |---|---|---|---|
-| T-101 | Integrácia MapKit + CLLocationManager, žiadosť o povolenie lokácie | iOS dev | 3 h |
-| T-102 | Custom MKAnnotation – ikona a farba podľa kategórie | iOS dev | 3 h |
-| T-103 | SQLite query – načítanie venues v okruhu podľa GPS (Haversine formula) | iOS dev | 5 h |
-| T-104 | Bottom sheet po ťuknutí na pin (názov, vzdialenosť, kategória, hodiny) | iOS dev | 3 h |
+| T-101 | Integrácia MapLibre (dlaždice OpenFreeMap) + LocationManager, žiadosť o povolenie polohy | Android dev | 3 h |
+| T-102 | Vrstva pinov (GeoJSON zdroj + clustering) – farba podľa kategórie | Android dev | 3 h |
+| T-103 | SQLite query – načítanie venues v okruhu podľa GPS (Haversine formula) | Android dev | 5 h |
+| T-104 | Bottom sheet (`ModalBottomSheet`) po ťuknutí na pin (názov, vzdialenosť, kategória, hodiny) | Android dev | 3 h |
 
 ---
 
@@ -60,9 +60,9 @@
 
 | # | Task | Zodpovedný | Odhad |
 |---|---|---|---|
-| T-201 | Filter sheet UI – kategórie (checkboxy), slider vzdialenosti | iOS dev | 4 h |
-| T-202 | FilterViewModel – stav filtra, aktualizácia mapy pri zmene | iOS dev | 3 h |
-| T-203 | SQLite query rozšírená o filter kategórie a radius | iOS dev | 2 h |
+| T-201 | Filter sheet UI (Jetpack Compose) – kategórie (checkboxy), slider vzdialenosti | Android dev | 4 h |
+| T-202 | Stav filtra v MapViewModel (StateFlow), aktualizácia mapy pri zmene | Android dev | 3 h |
+| T-203 | SQLite query rozšírená o filter kategórie a radius | Android dev | 2 h |
 
 ---
 
@@ -75,7 +75,8 @@
 
 **Akceptačné kritériá:**
 - Tlačidlo „Navigovať" je dostupné na karte zariadenia
-- Po ťuknutí sa zobrazí výber: Apple Maps, Google Maps, Waze (iba nainštalované)
+- Po ťuknutí sa zobrazí výber: Google Maps, Waze, iná mapová aplikácia (iba nainštalované)
+- Ak nie je nainštalovaná žiadna mapová aplikácia, zobrazí sa hláška (aplikácia nespadne)
 - Vybraná aplikácia sa otvorí s predvyplneným cieľom (GPS súradnice zariadenia)
 - Ak je dostupná iba jedna mapová aplikácia, otvorí sa priamo bez výberu
 
@@ -85,9 +86,9 @@
 
 | # | Task | Zodpovedný | Odhad |
 |---|---|---|---|
-| T-301 | Deep link pre Apple Maps (`maps://`), Google Maps (`comgooglemaps://`), Waze (`waze://`) | iOS dev | 3 h |
-| T-302 | Detekcia nainštalovaných mapových aplikácií (`UIApplication.canOpenURL`) | iOS dev | 2 h |
-| T-303 | Action sheet – výber aplikácie (zobrazí sa len ak je viac možností) | iOS dev | 2 h |
+| T-301 | Intenty pre Google Maps (`google.navigation:`), Waze (`https://waze.com/ul`) a inú mapovú aplikáciu (`geo:`) | Android dev | 3 h |
+| T-302 | Detekcia nainštalovaných mapových aplikácií (`PackageManager` + `<queries>` v manifeste) | Android dev | 2 h |
+| T-303 | Dialóg výberu aplikácie (zobrazí sa len ak je viac možností) | Android dev | 2 h |
 
 ---
 
