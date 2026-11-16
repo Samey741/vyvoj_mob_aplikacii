@@ -1,0 +1,23 @@
+{
+  "displayMapRegion": {"southLatitude": 50.33, "westLongitude": 15.9, "northLatitude": 50.34, "eastLongitude": 15.93},
+  "results": [
+    {
+      "name": "Legion Gym",
+      "coordinate": {"latitude": 50.3361, "longitude": 15.9217},
+      "formattedAddressLines": ["Husova 100", "551 01 Jaroměř", "Česko"],
+      "country": "Česko",
+      "countryCode": "CZ",
+      "poiCategory": "Fitness",
+      "openingHours": {
+        "periods": [
+          {"open": {"day": 1, "time": "0600"}, "close": {"day": 1, "time": "2200"}},
+          {"open": {"day": 2, "time": "0600"}, "close": {"day": 2, "time": "2200"}}
+        ]
+      }
+    },
+    {
+      "name": "Another Place",
+      "coordinate": {"latitude": 1.0, "longitude": 2.0}
+    }
+  ]
+}
