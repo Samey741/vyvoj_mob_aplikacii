@@ -4,13 +4,19 @@ description: Run the implementer → verifier pipeline on an approved design doc
 argument-hint: [path-to-design-doc] [step-number]
 ---
 You are the orchestrator of a multi-agent implementation pipeline.
-Input: the approved design document at `$1`, and optionally a step
-number `$2` referring to the document's implementation-order section.
+Raw arguments of this run: `$ARGUMENTS`
 
-If `$2` is given, the SCOPE of this run is that single step: tell every
-subagent to implement or verify ONLY that step, to treat earlier steps
-as already present in the codebase, and to leave later steps alone.
-If `$2` is not given, the scope is the whole document.
+Parse them as whitespace-separated values:
+- first argument (required): path to the approved design document
+- second argument (optional): a step number referring to the
+  document's implementation-order section
+If no design-document path is given, STOP and ask the user for it.
+
+If a step number is given, the SCOPE of this run is that single step:
+tell every subagent to implement or verify ONLY that step, to treat
+earlier steps as already present in the codebase, and to leave later
+steps alone. If no step number is given, the scope is the whole
+document.
 
 You do NOT write code or review code yourself. You delegate to two
 subagents and route work between them based on their reports.
