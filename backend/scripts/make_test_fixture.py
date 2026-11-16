@@ -1,4 +1,4 @@
-"""Regenerates the iOS test database `frontend/SportNavTests/Fixtures/test_venues.sqlite` (DESIGN.md 9.2, 11.2).
+"""Regenerates the Android test database `frontend/app/src/test/resources/test_venues.sqlite` (DESIGN.md 9.2, 11.2).
 
     cd backend && python scripts/make_test_fixture.py [--output <path>.sqlite]
 
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sportnav_data.export import export_venues  # noqa: E402
 
 DEFAULT_OUTPUT = (
-    Path(__file__).resolve().parent.parent.parent / "frontend" / "SportNavTests" / "Fixtures" / "test_venues.sqlite"
+    Path(__file__).resolve().parent.parent.parent / "frontend" / "app" / "src" / "test" / "resources" / "test_venues.sqlite"
 )
 
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri")
@@ -165,7 +165,7 @@ def build_fixture(output: Path = DEFAULT_OUTPUT) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Regenerate the iOS test fixture database.")
+    parser = argparse.ArgumentParser(description="Regenerate the Android test fixture database.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args(argv)
     print(f"Wrote {build_fixture(args.output)}")

@@ -323,7 +323,7 @@ def test_empty_strings_become_null(db_path):
     assert rows(db_path, "SELECT street, city, phone, website FROM venues") == [(None, None, None, None)]
 
 
-# --- test fixture DB for the iOS tests --------------------------------------------------------------------------
+# --- test fixture DB for the Android tests --------------------------------------------------------------------------
 
 
 def dump(path) -> list[str]:
