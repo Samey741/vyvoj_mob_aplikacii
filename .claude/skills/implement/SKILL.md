@@ -53,11 +53,21 @@ Never pass the implementer's conversation or your own reasoning.
 Wait for its Verification Report.
 
 ## Step 3 — Route the verdict
-- PASS → go to Step 4.
+- PASS with no findings, or only findings whose cause = design →
+  go to Step 4 (design findings go into the PR description).
+- PASS with findings whose cause = implementation (any severity) →
+  use a new `implementer` subagent with the design document + the
+  scope + ONLY those implementation findings from the Verification
+  Report (tell it to leave design findings alone and to add tests
+  that would have caught each fix). Then repeat Step 2.
+  This fix-up happens at most once per run; if the next verification
+  is PASS again with implementation findings, go to Step 4 and list
+  them in the PR description as follow-ups.
 - FAIL, cause = implementation → use a new `implementer` subagent with
   the design document + the scope + the Verification Report. Then
   repeat Step 2.
-  Maximum 2 verification rounds.
+  Maximum 2 verification rounds (the PASS fix-up round counts toward
+  this limit).
 - FAIL, cause = design → STOP. Summarize the design problem for the
   user; do not attempt to fix the design yourself.
 
