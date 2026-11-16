@@ -1,0 +1,17 @@
+[
+  {
+    "place_id": 123456,
+    "licence": "Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright",
+    "osm_type": "node",
+    "osm_id": 987654,
+    "category": "leisure",
+    "type": "fitness_centre",
+    "importance": 0.3,
+    "addresstype": "leisure",
+    "name": "Legion Gym",
+    "display_name": "Legion Gym, Husova, Jaroměř, okres Náchod, Královéhradecký kraj, 551 01, Česko",
+    "lat": "50.3561",
+    "lon": "15.9187",
+    "extratags": {"opening_hours": "Mo-Fr 06:00-22:00; Sa,Su 08:00-20:00"}
+  }
+]

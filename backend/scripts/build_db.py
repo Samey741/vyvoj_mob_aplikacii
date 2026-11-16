@@ -1,12 +1,12 @@
-"""CLI that builds venues.sqlite from scraped venues (DESIGN.md sections 3.2, 3.3, 8.3, 8.4, 8.9, 12).
+"""CLI that builds venues.sqlite from scraped venues (DESIGN.md sections 3.2, 3.3, 8.3, 8.4, 8.9, 9.1, 12).
 
     python scripts/build_db.py --input data/venues_raw.json --output ../frontend/SportNav/Resources/venues.sqlite
 
-Environment (or `backend/.env`, see `.env.example`):
-    APPLE_MAPS_AUTH_TOKEN   required; exchanged exactly once for an Apple Maps access token (section 8.3)
-    GOOGLE_API_KEY          optional; without it the Google fallback is skipped (section 8.4)
+No environment variable is required. Optional (environment or `backend/.env`, see `.env.example`):
+    NOMINATIM_EMAIL   contact e-mail sent to Nominatim as the `email` parameter (usage policy, section 8.3)
 
-API keys / tokens are never printed or logged by this script.
+The e-mail is never printed or logged by this script. Exit code 1 on any fatal error, including
+HTTP 403 from Nominatim (section 8.9); the database is then not written.
 """
 
 from __future__ import annotations
@@ -26,13 +26,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx  # noqa: E402
 
-from sportnav_data.enrich import AppleAuthError, enrich_all, get_apple_access_token  # noqa: E402
+from sportnav_data.enrich import NominatimBlockedError, enrich_all  # noqa: E402
 from sportnav_data.export import export_venues  # noqa: E402
 
 logger = logging.getLogger("build_db")
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 PENDING_WARN_SHARE = 0.10  # section 12: warn when more than 10 % of venues have no GPS
+MIN_REQUEST_INTERVAL = 1.0  # Nominatim usage policy: at most 1 request per second (section 3.2)
+GPS_SOURCES = ("nominatim_poi", "nominatim_address")
 
 
 class BuildError(Exception):
@@ -71,6 +73,11 @@ def database_statistics(path: Path) -> dict:
     try:
         total = conn.execute("SELECT COUNT(*) FROM venues").fetchone()[0]
         pending = conn.execute("SELECT COUNT(*) FROM venues WHERE gps_pending = 1").fetchone()[0]
+        per_source = dict(
+            conn.execute(
+                "SELECT gps_source, COUNT(*) FROM venues WHERE gps_source IS NOT NULL GROUP BY gps_source"
+            ).fetchall()
+        )
         uncategorized = conn.execute(
             "SELECT COUNT(*) FROM venues WHERE id NOT IN (SELECT venue_id FROM venue_categories)"
         ).fetchone()[0]
@@ -84,6 +91,7 @@ def database_statistics(path: Path) -> dict:
         "total": total,
         "gps_pending": pending,
         "gps_pending_share": (pending / total) if total else 0.0,
+        "per_source": per_source,
         "uncategorized": uncategorized,
         "per_category": per_category,
     }
@@ -93,6 +101,8 @@ def format_statistics(stats: dict) -> str:
     lines = [
         f"Records written: {stats['total']}",
         f"gps_pending: {stats['gps_pending']} ({stats['gps_pending_share'] * 100:.1f} %)",
+        "gps_source:",
+        *[f"  {source}: {stats['per_source'].get(source, 0)}" for source in GPS_SOURCES],
         f"Venues without any known category: {stats['uncategorized']}",
         "Venues per category:",
     ]
@@ -127,33 +137,25 @@ def check_output_writable(path: Path) -> None:
 async def build(
     input_path: Path,
     output_path: Path,
-    apple_auth_token: str,
-    google_key: str | None,
+    email: str | None = None,
     client: httpx.AsyncClient | None = None,
+    min_interval: float | None = None,
 ) -> dict:
     """Read, enrich and export; returns the statistics of the written database.
 
     `client` can be injected (tests use `httpx.MockTransport`); otherwise a real client is created.
+    Raises BuildError on fatal errors, including NominatimBlockedError (HTTP 403, section 8.9).
     """
+    if min_interval is None:
+        min_interval = MIN_REQUEST_INTERVAL
     venues = read_venues(input_path)
-    check_output_writable(output_path)  # before any Apple / Google call (Google free-tier quota, section 3.2)
+    check_output_writable(output_path)  # before the first request to Nominatim
 
     async def run(http: httpx.AsyncClient) -> list[dict]:
         try:
-            access_token = await get_apple_access_token(apple_auth_token, http)  # exchanged once (8.3)
-        except (httpx.HTTPError, ValueError) as exc:
-            # Only the exception type: httpx messages may embed request details.
-            raise BuildError(f"Apple Maps token exchange failed ({type(exc).__name__})") from None
-        try:
-            return await enrich_all(
-                venues,
-                access_token,
-                google_key,
-                http,
-                apple_auth_token=apple_auth_token,
-            )
-        except AppleAuthError as exc:
-            raise BuildError(f"Apple Maps authorization failed, run aborted: {exc}") from None
+            return await enrich_all(venues, http, email, min_interval)
+        except NominatimBlockedError as exc:
+            raise BuildError(f"Nominatim blocked the import, run aborted: {exc}") from None
 
     if client is not None:
         enriched = await run(client)
@@ -178,20 +180,14 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    # httpx logs every request URL at INFO; keep it quiet (the Google URL carries the API key).
+    # httpx logs every request URL at INFO; keep it quiet (the URL carries the optional e-mail).
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     load_dotenv(BACKEND_DIR / ".env")
-    apple_auth_token = os.environ.get("APPLE_MAPS_AUTH_TOKEN", "").strip()
-    google_key = os.environ.get("GOOGLE_API_KEY", "").strip() or None
-    if not apple_auth_token:
-        print("APPLE_MAPS_AUTH_TOKEN is not set (see backend/.env.example)", file=sys.stderr)
-        return 2
-    if google_key is None:
-        logger.info("GOOGLE_API_KEY not set, Google fallback is skipped")
+    email = os.environ.get("NOMINATIM_EMAIL", "").strip() or None
 
     try:
-        stats = asyncio.run(build(args.input, args.output, apple_auth_token, google_key))
+        stats = asyncio.run(build(args.input, args.output, email))
     except BuildError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

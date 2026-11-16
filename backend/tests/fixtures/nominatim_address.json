@@ -1,0 +1,15 @@
+[
+  {
+    "place_id": 223456,
+    "osm_type": "way",
+    "osm_id": 187654,
+    "category": "building",
+    "type": "yes",
+    "addresstype": "building",
+    "name": "",
+    "display_name": "100, Husova, Jaroměř, okres Náchod, Královéhradecký kraj, 551 01, Česko",
+    "lat": "50.3570",
+    "lon": "15.9190",
+    "extratags": {"opening_hours": "Mo-Su 00:00-24:00"}
+  }
+]

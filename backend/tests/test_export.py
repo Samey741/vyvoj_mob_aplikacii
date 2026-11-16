@@ -32,7 +32,7 @@ def enriched(id_: int, title: str = "Venue", **extra) -> dict:
         "lat": 50.0,
         "lon": 15.0,
         "opening_hours": [],
-        "gps_source": "apple_maps",
+        "gps_source": "nominatim_poi",
         "gps_pending": 0,
     }
     record.update(extra)
@@ -148,7 +148,7 @@ def test_row_counts_match_input(db_path):
 def test_venue_columns_are_stored(db_path):
     export_venues([enriched(193, "Legion Gym", street="Husova 100", city="Jaroměř")], db_path)
     assert rows(db_path, "SELECT id, name, street, city, lat, lon, phone, website, gps_source, gps_pending FROM venues") == [
-        (193, "Legion Gym", "Husova 100", "Jaroměř", 50.0, 15.0, "+420 606 182 647", "http://example.cz/", "apple_maps", 0)
+        (193, "Legion Gym", "Husova 100", "Jaroměř", 50.0, 15.0, "+420 606 182 647", "http://example.cz/", "nominatim_poi", 0)
     ]
 
 
@@ -201,7 +201,7 @@ def test_gps_pending_iff_lat_null(db_path):
         enriched(1),
         enriched(2, lat=None, lon=None, gps_source=None, gps_pending=1),
         # inconsistent input is normalized by the exporter, the invariant always holds
-        enriched(3, lat=None, lon=None, gps_pending=0, gps_source="apple_maps"),
+        enriched(3, lat=None, lon=None, gps_pending=0, gps_source="nominatim_poi"),
         enriched(4, lat=50.0, lon=None, gps_pending=0),
         enriched(5, gps_pending=1),  # claims pending but has coordinates
         {"id": 6, "title": "Raw record without enrichment keys"},
@@ -367,27 +367,30 @@ def test_fixture_db_contents():
 
 # --- build_db CLI ----------------------------------------------------------------------------------------------------
 
-APPLE_TOKEN = "apple-auth-token-SECRET"
-GOOGLE_KEY = "google-key-SECRET"
+EMAIL = "secret.person@example.com"
+
+
+@pytest.fixture(autouse=True)
+def fast_requests(monkeypatch):
+    """The real default is 1 request per second (Nominatim usage policy); tests do not wait."""
+    monkeypatch.setattr(build_db, "MIN_REQUEST_INTERVAL", 0.0)
+
+
+def nominatim_response(name: str) -> httpx.Response:
+    return httpx.Response(200, content=(FIXTURES / name).read_text(encoding="utf-8"))
 
 
 def venues_handler(calls: list[httpx.Request]):
-    """Apple knows 'Legion Gym'; 'Fallback Gym' is empty at Apple but known to Google; 'Nowhere' nowhere."""
+    """Nominatim knows 'Legion Gym' as POI, 'Address Gym' only by address; 'Nowhere' nowhere."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        url = request.url
-        if url.path == "/v1/token":
-            return httpx.Response(200, json=fixture_json("apple_token.json"))
-        if url.path == "/v1/search":
-            if "Legion Gym" in url.params["q"]:
-                return httpx.Response(200, json=fixture_json("apple_search_result.json"))
-            return httpx.Response(200, json=fixture_json("apple_search_empty.json"))
-        if "findplacefromtext" in url.path:
-            if "Fallback Gym" in url.params["input"]:
-                return httpx.Response(200, json=fixture_json("google_find_place.json"))
-            return httpx.Response(200, json=fixture_json("google_zero_results.json"))
-        return httpx.Response(404)
+        q = request.url.params["q"]
+        if q.startswith("Legion Gym"):
+            return nominatim_response("nominatim_poi.json")
+        if q == "A 1, B":  # address query of 'Address Gym'
+            return nominatim_response("nominatim_address.json")
+        return nominatim_response("nominatim_empty.json")
 
     return handler
 
@@ -398,7 +401,7 @@ def make_client(calls: list[httpx.Request]) -> httpx.AsyncClient:
 
 RAW_VENUES = [
     {"id": 1, "title": "Legion Gym", "categories": ["Posilovny a silové tréninky"], "street": "Husova 100", "city": "Jaroměř"},
-    {"id": 2, "title": "Fallback Gym", "categories": ["Lezecké stěny", "Bowling"], "street": "A 1", "city": "B"},
+    {"id": 2, "title": "Address Gym", "categories": ["Lezecké stěny", "Bowling"], "street": "A 1", "city": "B"},
     {"id": 3, "title": "Nowhere", "categories": ["Wellness a relax"], "street": "C 2", "city": "D"},
     {"id": 4, "title": "Nowhere 2", "categories": ["Bowling"], "street": "E 3", "city": "F"},
 ]
@@ -410,96 +413,51 @@ def write_input(tmp_path) -> Path:
     return path
 
 
-def run_build(tmp_path, google_key, out) -> tuple[dict, list[httpx.Request]]:
+def run_build(tmp_path, out, email=None) -> tuple[dict, list[httpx.Request]]:
     calls: list[httpx.Request] = []
 
     async def go() -> dict:
         async with make_client(calls) as client:
-            return await build_db.build(write_input(tmp_path), out, APPLE_TOKEN, google_key, client=client)
+            return await build_db.build(write_input(tmp_path), out, email, client=client, min_interval=0.0)
 
     return asyncio.run(go()), calls
 
 
 def test_build_enriches_exports_and_reports_statistics(tmp_path):
     out = tmp_path / "venues.sqlite"
-    stats, calls = run_build(tmp_path, GOOGLE_KEY, out)
+    stats, calls = run_build(tmp_path, out)
 
     assert stats["total"] == 4
     assert stats["gps_pending"] == 2
     assert stats["gps_pending_share"] == 0.5
+    assert stats["per_source"] == {"nominatim_poi": 1, "nominatim_address": 1}
     assert stats["uncategorized"] == 1  # "Nowhere 2" has only an unknown category
     assert dict(stats["per_category"])["lezecke-steny-4"] == 1
 
     assert rows(str(out), "SELECT id, gps_source, gps_pending, lat IS NULL FROM venues ORDER BY id") == [
-        (1, "apple_maps", 0, 0),
-        (2, "google_places_fallback", 0, 0),
+        (1, "nominatim_poi", 0, 0),
+        (2, "nominatim_address", 0, 0),
         (3, None, 1, 1),
         (4, None, 1, 1),
     ]
-    # Apple opening hours survive into the database
-    assert rows(str(out), "SELECT venue_id, day, opens, closes FROM opening_hours ORDER BY rowid") == [
-        (1, "mon", "06:00", "22:00"),
-        (1, "tue", "06:00", "22:00"),
+    # OSM opening hours of the POI result survive into the database; the address result has none
+    assert rows(str(out), "SELECT COUNT(*) FROM opening_hours WHERE venue_id = 1") == [(7,)]
+    assert rows(str(out), "SELECT day, opens, closes FROM opening_hours WHERE venue_id = 1 ORDER BY rowid LIMIT 1") == [
+        ("mon", "06:00", "22:00")
     ]
-    # the Apple auth token is exchanged for an access token exactly once
-    assert sum(1 for r in calls if r.url.path == "/v1/token") == 1
+    assert rows(str(out), "SELECT COUNT(*) FROM opening_hours WHERE venue_id <> 1") == [(0,)]
+    # 1 POI request for venue 1, POI + address for each of the others
+    assert len(calls) == 1 + 2 + 2 + 2
 
 
-def test_build_without_google_key_skips_fallback(tmp_path):
-    stats, calls = run_build(tmp_path, None, tmp_path / "v.sqlite")
-    assert not [r for r in calls if "googleapis" in r.url.host]
-    assert stats["gps_pending"] == 3
+def test_build_sends_email_only_when_given(tmp_path):
+    _, calls = run_build(tmp_path, tmp_path / "a.sqlite")
+    assert calls and all("email" not in r.url.params for r in calls)
+    _, calls = run_build(tmp_path, tmp_path / "b.sqlite", email=EMAIL)
+    assert calls and all(r.url.params["email"] == EMAIL for r in calls)
 
 
-def test_main_prints_statistics_and_never_leaks_keys(tmp_path, monkeypatch, capsys, caplog):
-    calls: list[httpx.Request] = []
-    real_client = make_client(calls)  # built before patching; main() receives it instead of a real client
-
-    def fake_client(*args, **kwargs):
-        return real_client
-
-    monkeypatch.setattr(build_db.httpx, "AsyncClient", fake_client)
-    monkeypatch.setattr(build_db, "BACKEND_DIR", tmp_path)  # no .env is read
-    monkeypatch.setenv("APPLE_MAPS_AUTH_TOKEN", APPLE_TOKEN)
-    monkeypatch.setenv("GOOGLE_API_KEY", GOOGLE_KEY)
-    out = tmp_path / "venues.sqlite"
-
-    with caplog.at_level(logging.DEBUG):
-        code = build_db.main(["--input", str(write_input(tmp_path)), "--output", str(out)])
-    captured = capsys.readouterr()
-
-    assert code == 0
-    assert "Records written: 4" in captured.out
-    assert "gps_pending: 2 (50.0 %)" in captured.out
-    assert "above 10 %" in captured.out  # share warning of section 12
-    assert "Bowling" in caplog.text  # unknown categories are logged
-    for secret in (APPLE_TOKEN, GOOGLE_KEY, "access-token-xyz"):
-        assert secret not in captured.out + captured.err + caplog.text
-
-
-def test_main_requires_apple_token(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(build_db, "BACKEND_DIR", tmp_path)
-    monkeypatch.delenv("APPLE_MAPS_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    code = build_db.main(["--input", str(write_input(tmp_path)), "--output", str(tmp_path / "o.sqlite")])
-    assert code == 2
-    assert "APPLE_MAPS_AUTH_TOKEN" in capsys.readouterr().err
-    assert not (tmp_path / "o.sqlite").exists()
-
-
-def test_main_reports_bad_input_file(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(build_db, "BACKEND_DIR", tmp_path)
-    monkeypatch.setenv("APPLE_MAPS_AUTH_TOKEN", APPLE_TOKEN)
-    bad = tmp_path / "bad.json"
-    bad.write_text('{"not": "an array"}', encoding="utf-8")
-    code = build_db.main(["--input", str(bad), "--output", str(tmp_path / "o.sqlite")])
-    assert code == 1
-    assert "JSON array" in capsys.readouterr().err
-    missing = build_db.main(["--input", str(tmp_path / "missing.json"), "--output", str(tmp_path / "o.sqlite")])
-    assert missing == 1
-
-
-def main_with_handler(tmp_path, monkeypatch, handler, out, *, google_key=None):
+def run_main(tmp_path, monkeypatch, handler, out, *, input_path=None, env_email=None):
     """Run `build_db.main` against a MockTransport handler; returns (exit code, requests made)."""
     calls: list[httpx.Request] = []
 
@@ -509,72 +467,111 @@ def main_with_handler(tmp_path, monkeypatch, handler, out, *, google_key=None):
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(recording))
     monkeypatch.setattr(build_db.httpx, "AsyncClient", lambda *a, **k: client)
-    monkeypatch.setattr(build_db, "BACKEND_DIR", tmp_path)
-    monkeypatch.setenv("APPLE_MAPS_AUTH_TOKEN", APPLE_TOKEN)
-    if google_key:
-        monkeypatch.setenv("GOOGLE_API_KEY", google_key)
-    else:
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    code = build_db.main(["--input", str(write_input(tmp_path)), "--output", str(out)])
+    monkeypatch.setattr(build_db, "BACKEND_DIR", tmp_path)  # no real .env is read
+    monkeypatch.delenv("NOMINATIM_EMAIL", raising=False)
+    if env_email:
+        monkeypatch.setenv("NOMINATIM_EMAIL", env_email)
+    code = build_db.main(["--input", str(input_path or write_input(tmp_path)), "--output", str(out)])
     return code, calls
 
 
-def assert_no_secrets(*texts: str) -> None:
-    for secret in (APPLE_TOKEN, GOOGLE_KEY, "access-token-xyz"):
-        for text in texts:
-            assert secret not in text
-
-
-def test_main_apple_token_exchange_401_aborts_without_output(tmp_path, monkeypatch, capsys, caplog):
-    out = tmp_path / "o.sqlite"
+def test_main_runs_without_any_environment_variable(tmp_path, monkeypatch, capsys, caplog):
+    monkeypatch.delenv("NOMINATIM_EMAIL", raising=False)
+    out = tmp_path / "venues.sqlite"
     with caplog.at_level(logging.DEBUG):
-        code, calls = main_with_handler(tmp_path, monkeypatch, lambda request: httpx.Response(401), out)
+        code, calls = run_main(tmp_path, monkeypatch, venues_handler([]), out)
     captured = capsys.readouterr()
-    assert code == 1
-    assert "token exchange failed" in captured.err
-    assert [r.url.path for r in calls] == ["/v1/token"]
-    assert_no_secrets(captured.out, captured.err, caplog.text)
-    assert not out.exists()
+
+    assert code == 0
+    assert out.exists()
+    assert calls and all("email" not in r.url.params for r in calls)
+    assert "Records written: 4" in captured.out
+    assert "gps_pending: 2 (50.0 %)" in captured.out
+    assert "nominatim_poi: 1" in captured.out
+    assert "nominatim_address: 1" in captured.out
+    assert "above 10 %" in captured.out  # share warning of section 12
+    assert "lezecke-steny-4: 1" in captured.out
+    assert "Venues without any known category: 1" in captured.out
+    assert "Bowling" in caplog.text  # unknown categories are logged
 
 
-@pytest.mark.parametrize("refresh_status", [200, 401])
-@pytest.mark.parametrize("existing_output", [False, True])
-def test_main_apple_search_401_aborts_with_apple_auth_error_branch(
-    tmp_path, monkeypatch, capsys, caplog, refresh_status, existing_output
-):
-    """Token exchange succeeds, /v1/search keeps returning 401 -> the AppleAuthError branch of build_db."""
-    token_calls = 0
+def test_main_uses_email_from_dotenv_and_never_prints_it(tmp_path, monkeypatch, capsys, caplog):
+    (tmp_path / ".env").write_text(f"# contact\nNOMINATIM_EMAIL={EMAIL}\n", encoding="utf-8")
+    # setenv then delenv registers an undo, so monkeypatch removes whatever load_dotenv writes into
+    # os.environ even when `main` raises (delenv alone on an unset variable would register nothing).
+    monkeypatch.setenv("NOMINATIM_EMAIL", "placeholder")
+    monkeypatch.delenv("NOMINATIM_EMAIL")
+    calls: list[httpx.Request] = []
+    client = make_client(calls)
+    monkeypatch.setattr(build_db.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(build_db, "BACKEND_DIR", tmp_path)
+    out = tmp_path / "venues.sqlite"
+    with caplog.at_level(logging.DEBUG):
+        code = build_db.main(["--input", str(write_input(tmp_path)), "--output", str(out)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert calls and all(r.url.params["email"] == EMAIL for r in calls)
+    assert EMAIL not in captured.out + captured.err + caplog.text
+
+
+def test_dotenv_email_does_not_leak_into_the_next_test():
+    # Runs right after the .env test above: its load_dotenv must have been undone by monkeypatch.
+    assert os.environ.get("NOMINATIM_EMAIL") != EMAIL
+
+
+def test_main_uses_email_from_environment_and_never_prints_it(tmp_path, monkeypatch, capsys, caplog):
+    out = tmp_path / "venues.sqlite"
+    with caplog.at_level(logging.DEBUG):
+        code, calls = run_main(tmp_path, monkeypatch, venues_handler([]), out, env_email=EMAIL)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert calls and all(r.url.params["email"] == EMAIL for r in calls)
+    assert EMAIL not in captured.out + captured.err + caplog.text
+
+
+def test_main_blocked_by_nominatim_exits_1_without_database(tmp_path, monkeypatch, capsys, caplog):
+    out = tmp_path / "venues.sqlite"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal token_calls
-        if request.url.path == "/v1/token":
-            token_calls += 1
-            if token_calls == 1 or refresh_status == 200:
-                return httpx.Response(200, json=fixture_json("apple_token.json"))
-            return httpx.Response(401)  # the refresh is rejected
-        if request.url.path == "/v1/search":
-            return httpx.Response(401)
-        return httpx.Response(404)
+        if request.url.params["q"].startswith("Address Gym"):
+            return httpx.Response(403)
+        return nominatim_response("nominatim_empty.json")
 
-    out = tmp_path / "o.sqlite"
-    if existing_output:
-        out.write_bytes(b"previous database")
     with caplog.at_level(logging.DEBUG):
-        code, calls = main_with_handler(tmp_path, monkeypatch, handler, out, google_key=GOOGLE_KEY)
+        code, calls = run_main(tmp_path, monkeypatch, handler, out, env_email=EMAIL)
     captured = capsys.readouterr()
 
     assert code == 1
-    assert "Apple Maps authorization failed, run aborted" in captured.err  # not the token-exchange message
-    assert "token exchange failed" not in captured.err
-    assert "Traceback" not in captured.err
-    assert any(r.url.path == "/v1/search" for r in calls)  # got past the token exchange
-    assert token_calls == 2  # exchanged once, refreshed once
-    assert not [r for r in calls if "googleapis" in r.url.host]  # no Google quota burnt after the abort
-    assert_no_secrets(captured.out, captured.err, caplog.text)
-    if existing_output:
-        assert out.read_bytes() == b"previous database"
-    else:
-        assert not out.exists()
+    assert "ERROR" in captured.err and "blocked" in captured.err and "Traceback" not in captured.err
+    assert not out.exists()
+    # venue 1 (POI + address), then the POI query of venue 2 got 403 -> nothing more is sent
+    assert [r.url.params["q"] for r in calls] == [
+        "Legion Gym, Husova 100, Jaroměř",
+        "Husova 100, Jaroměř",
+        "Address Gym, A 1, B",
+    ]
+    assert EMAIL not in captured.out + captured.err + caplog.text
+
+
+def test_main_blocked_keeps_an_existing_output_untouched(tmp_path, monkeypatch, capsys):
+    out = tmp_path / "venues.sqlite"
+    out.write_bytes(b"previous database")
+    code, _ = run_main(tmp_path, monkeypatch, lambda request: httpx.Response(403), out)
+    capsys.readouterr()
+    assert code == 1
+    assert out.read_bytes() == b"previous database"
+
+
+def test_main_reports_bad_input_file(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(build_db, "BACKEND_DIR", tmp_path)
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"not": "an array"}', encoding="utf-8")
+    code = build_db.main(["--input", str(bad), "--output", str(tmp_path / "o.sqlite")])
+    assert code == 1
+    assert "JSON array" in capsys.readouterr().err
+    missing = build_db.main(["--input", str(tmp_path / "missing.json"), "--output", str(tmp_path / "o.sqlite")])
+    assert missing == 1
 
 
 # --- output location is checked before any network call -------------------------------------------------------
@@ -588,13 +585,12 @@ def test_main_unwritable_output_fails_fast_before_any_network_call(tmp_path, mon
     blocker = tmp_path / "blocker"
     blocker.write_text("a file, not a directory", encoding="utf-8")
     for out in (blocker / "venues.sqlite", tmp_path):  # parent is a file / the output is a directory
-        code, calls = main_with_handler(tmp_path, monkeypatch, never_called, out, google_key=GOOGLE_KEY)
+        code, calls = run_main(tmp_path, monkeypatch, never_called, out)
         captured = capsys.readouterr()
         assert code == 1
         assert calls == []
         assert "ERROR" in captured.err and "not writable" in captured.err
         assert "Traceback" not in captured.err
-        assert_no_secrets(captured.out, captured.err)
     assert blocker.read_text(encoding="utf-8") == "a file, not a directory"
 
 
@@ -605,12 +601,11 @@ def test_main_read_only_existing_output_fails_fast_and_is_left_untouched(tmp_pat
     try:
         if os.access(out, os.W_OK):
             pytest.skip("cannot make a file read-only for this user")
-        code, calls = main_with_handler(tmp_path, monkeypatch, never_called, out, google_key=GOOGLE_KEY)
+        code, calls = run_main(tmp_path, monkeypatch, never_called, out)
         captured = capsys.readouterr()
         assert code == 1
         assert calls == []
         assert "not writable" in captured.err and "Traceback" not in captured.err
-        assert_no_secrets(captured.out, captured.err)
     finally:
         out.chmod(0o666)
     assert out.read_bytes() == b"previous database"
@@ -632,22 +627,22 @@ def test_main_oserror_during_final_export_is_a_clean_error_exit(tmp_path, monkey
     monkeypatch.setattr(build_db, "export_venues", locked)
     out = tmp_path / "venues.sqlite"
     with caplog.at_level(logging.DEBUG):
-        code, made = main_with_handler(tmp_path, monkeypatch, venues_handler([]), out, google_key=GOOGLE_KEY)
+        code, made = run_main(tmp_path, monkeypatch, venues_handler([]), out, env_email=EMAIL)
     captured = capsys.readouterr()
     assert code == 1
     assert made  # enrichment did run; only the write failed
     assert "ERROR: Cannot write output file" in captured.err and "PermissionError" in captured.err
     assert "Traceback" not in captured.err
-    assert_no_secrets(captured.out, captured.err, caplog.text)
+    assert EMAIL not in captured.out + captured.err + caplog.text
 
 
 def test_load_dotenv_does_not_override_environment(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
-    env_file.write_text("# comment\nAPPLE_MAPS_AUTH_TOKEN=from-file\nGOOGLE_API_KEY=\nEXTRA_X=1\n", encoding="utf-8")
-    monkeypatch.setenv("APPLE_MAPS_AUTH_TOKEN", "from-env")
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    env_file.write_text("# comment\nNOMINATIM_EMAIL=from-file\nOTHER=\nEXTRA_X=1\n", encoding="utf-8")
+    monkeypatch.setenv("NOMINATIM_EMAIL", "from-env")
+    monkeypatch.delenv("OTHER", raising=False)
     monkeypatch.delenv("EXTRA_X", raising=False)
     build_db.load_dotenv(env_file)
-    assert os.environ["APPLE_MAPS_AUTH_TOKEN"] == "from-env"
-    assert "GOOGLE_API_KEY" not in os.environ
+    assert os.environ["NOMINATIM_EMAIL"] == "from-env"
+    assert "OTHER" not in os.environ
     monkeypatch.delenv("EXTRA_X", raising=False)

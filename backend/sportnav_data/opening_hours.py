@@ -1,82 +1,127 @@
-"""Normalization of API opening hours to (day, opens, closes) tuples.
+"""Normalization of OSM `opening_hours` tag values to (day, opens, closes) tuples (DESIGN.md 8.5, 8.10).
 
-Supported input (Google Places style, also the shape Apple results are expected to be
-converted to, see DESIGN.md section 12):
+Supported subset of the OSM opening_hours syntax:
 
-    {"periods": [{"open": {"day": 1, "time": "0600"}, "close": {"day": 1, "time": "2200"}}, ...]}
+    24/7                                   -> all 7 days 00:00-23:59
+    rule; rule; ...                        -> rules separated by ';'
+    rule = [day selection] times           e.g. "Mo-Fr 06:00-22:00", "Sa,Su 08:00-20:00"
+         | [day selection] off | closed     e.g. "We off"
+    day selection: Mo Tu We Th Fr Sa Su, ranges (also wrapping, "Sa-Mo") and lists ("Mo,We,Fr-Su");
+                   without a day selection the rule applies to every day
+    times: one or more "HH:MM-HH:MM" ranges separated by ',';
+           "24:00" as a closing time is stored as "23:59"; closes < opens means "past midnight"
 
-A bare list of such periods is accepted too. `day` is 0 = Sunday ... 6 = Saturday.
-A period that closes after midnight is kept as one tuple on the opening day with
-`closes < opens` (e.g. ("fri", "22:00", "02:00")). A single period with `open` only
-(day 0, time 0000, no `close`) means "open 24/7" and expands to every day 00:00-23:59.
+A later rule replaces an earlier one for the days it selects (OSM semantics); `off` / `closed`
+empties those days. Anything else (public holidays, months, weeks, sunrise / sunset, comments,
+'+', '||', times above 24:00, comma separated rules, ...) makes the whole result [] - all or
+nothing. The function never raises.
 
-Anything that cannot be parsed yields [] - the function never raises.
+One tuple describes one block of opening that STARTS on `day`; with closes < opens the venue
+closes after midnight of the following day (DESIGN.md 8.10).
 """
 
 from __future__ import annotations
 
 import re
 
-_DAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")  # Google numbering
-_ORDER = {d: i for i, d in enumerate(("mon", "tue", "wed", "thu", "fri", "sat", "sun"))}
-_TIME_RE = re.compile(r"^(\d{2}):?(\d{2})$")
+_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_OSM_DAYS = {"Mo": 0, "Tu": 1, "We": 2, "Th": 3, "Fr": 4, "Sa": 5, "Su": 6}
+_RANGE_RE = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})$")
+
+_Ranges = list[tuple[str, str]]
 
 
-def _day(value: object) -> str | None:
-    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 6:
-        return None
-    return _DAYS[value]
+class _Unsupported(Exception):
+    """Internal: the value uses syntax outside the supported subset."""
 
 
-def _time(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    m = _TIME_RE.match(value.strip())
-    if not m:
-        return None
-    hh, mm = int(m.group(1)), int(m.group(2))
-    if hh > 23 or mm > 59:
-        return None
-    return f"{hh:02d}:{mm:02d}"
+def _time(hh: str, mm: str, *, closing: bool) -> str:
+    h, m = int(hh), int(mm)
+    if m > 59:
+        raise _Unsupported
+    if h == 24 and m == 0 and closing:
+        return "23:59"
+    if h > 23:
+        raise _Unsupported
+    return f"{h:02d}:{m:02d}"
+
+
+def _parse_times(text: str) -> _Ranges | None:
+    """Parse "HH:MM-HH:MM,..." or "off" / "closed" (-> []); None when `text` is neither."""
+    if text in ("off", "closed"):
+        return []
+    text = re.sub(r",\s+", ",", text)
+    ranges: set[tuple[str, str]] = set()
+    for part in text.split(","):
+        m = _RANGE_RE.match(part)
+        if not m:
+            return None
+        opens = _time(m.group(1), m.group(2), closing=False)
+        closes = _time(m.group(3), m.group(4), closing=True)
+        if opens == closes:
+            raise _Unsupported
+        ranges.add((opens, closes))
+    return sorted(ranges)
+
+
+def _parse_days(selection: str) -> set[int]:
+    days: set[int] = set()
+    for part in selection.split(","):
+        first, sep, last = part.partition("-")
+        if first not in _OSM_DAYS or (sep and last not in _OSM_DAYS):
+            raise _Unsupported
+        start = _OSM_DAYS[first]
+        end = _OSM_DAYS[last] if sep else start
+        day = start
+        days.add(day)
+        while day != end:  # a range may wrap around the end of the week ("Sa-Mo")
+            day = (day + 1) % 7
+            days.add(day)
+    return days
+
+
+def _parse_rule(rule: str) -> tuple[set[int], _Ranges]:
+    times = _parse_times(rule)
+    if times is not None:  # no day selection -> every day
+        return set(range(7)), times
+    pieces = rule.split(None, 1)
+    if len(pieces) != 2:
+        raise _Unsupported
+    days = _parse_days(pieces[0])
+    times = _parse_times(pieces[1].strip())
+    if times is None:
+        raise _Unsupported
+    return days, times
 
 
 def _parse(raw: object) -> list[tuple[str, str, str]]:
-    periods = raw.get("periods") if isinstance(raw, dict) else raw
-    if not isinstance(periods, list) or not periods:
+    if not isinstance(raw, str):
         return []
-
-    # 24/7: single period with an `open` and no `close`
-    if len(periods) == 1 and isinstance(periods[0], dict) and "close" not in periods[0]:
-        opened = periods[0].get("open")
-        if (
-            isinstance(opened, dict)
-            and _day(opened.get("day")) == "sun"  # day 0
-            and _time(opened.get("time")) == "00:00"
-        ):
-            return [(d, "00:00", "23:59") for d in _ORDER]
+    text = raw.strip()
+    if not text:
         return []
+    if text == "24/7":
+        return [(day, "00:00", "23:59") for day in _DAYS]
 
-    result: list[tuple[str, str, str]] = []
-    for period in periods:
-        if not isinstance(period, dict):
+    schedule: dict[int, _Ranges] = {}
+    for rule in text.split(";"):
+        rule = rule.strip()
+        if not rule:  # tolerate a trailing ';'
             continue
-        opened, closed = period.get("open"), period.get("close")
-        if not isinstance(opened, dict) or not isinstance(closed, dict):
-            continue
-        day = _day(opened.get("day"))
-        opens = _time(opened.get("time"))
-        closes = _time(closed.get("time"))
-        if day is None or opens is None or closes is None:
-            continue
-        result.append((day, opens, closes))
+        days, times = _parse_rule(rule)
+        for day in days:
+            schedule[day] = list(times)
 
-    result.sort(key=lambda t: (_ORDER[t[0]], t[1]))
-    return result
+    return [
+        (_DAYS[day], opens, closes)
+        for day in sorted(schedule)
+        for opens, closes in sorted(schedule[day])
+    ]
 
 
 def normalize_opening_hours(raw: object) -> list[tuple[str, str, str]]:
-    """Convert an API opening-hours payload to [(day, "HH:MM", "HH:MM"), ...]; [] if unusable."""
+    """Convert an OSM `opening_hours` value to [(day, "HH:MM", "HH:MM"), ...]; [] if unusable."""
     try:
         return _parse(raw)
-    except Exception:  # defensive: must never raise (DESIGN.md section 8.5)
+    except Exception:  # unsupported syntax or anything unexpected: never raise (DESIGN.md 8.5)
         return []
