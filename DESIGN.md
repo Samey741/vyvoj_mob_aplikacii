@@ -335,6 +335,8 @@ Rozhodnutia, ktoré dopĺňajú alebo spresňujú sekcie 3–6. Pri rozpore plat
    - **401 / 403** z Apple search → `AppleAuthError`. `enrich_all` raz obnoví access token cez `get_apple_access_token(apple_auth_token, client)` (ak je `apple_auth_token` zadaný) a zariadenie zopakuje; ak chyba pretrvá alebo obnova nie je možná, **celý beh sa ukončí výnimkou `AppleAuthError`** (žiadne volania Google za zvyšné zariadenia).
    - **429, 5xx, timeout, nevalidný JSON alebo JSON, ktorý nie je objekt** pre jedno zariadenie → zariadenie sa označí `gps_pending = 1` **bez volania Google**, chyba sa zaloguje a beh pokračuje.
    - **Strop Google** — `enrich_all(..., max_google_calls=500)`. Po dosiahnutí stropu sa ďalšie zariadenia bez Apple výsledku označia `gps_pending = 1` bez volania Google a raz sa zaloguje varovanie.
+10. **Zápis otváracích hodín v SQLite** (spresňuje §8.5, platí pre backend aj iOS) — jeden riadok `(day, opens, closes)` popisuje jeden blok otvorenia, ktorý **začína v deň `day`**. Ak je `closes < opens`, prevádzka končí po polnoci **nasledujúceho dňa** (napr. `fri 22:00–02:00` = piatok 22:00 až sobota 02:00). Nonstop prevádzka je 7 riadkov `00:00–23:59`. V jeden deň môže byť viac riadkov (prestávka). Viacdňové súvislé obdobia sa nezapisujú. iOS pri „dnešných hodinách" zobrazí riadky pre dnešný deň a pri `closes < opens` bez ďalšej úpravy zobrazí rozsah `opens–closes`. Stav „otvorené teraz" MVP nepočíta.
+11. **`street` a `city` v Swifte** (spresňuje §6 vs. §3.3) — SQLite môže obsahovať NULL (exportér ukladá prázdne reťazce ako NULL). `Venue.street` a `Venue.city` ostávajú neoptional `String`; `SQLiteVenueRepository` mapuje NULL na `""` a UI prázdne hodnoty nezobrazí.
 
 ---
 
@@ -497,7 +499,7 @@ Príkaz: `cd frontend && xcodebuild test -scheme SportNav -destination 'platform
 
 | Oblasť | Testované prípady |
 |---|---|
-| `SQLiteVenueRepository` | načíta všetky zariadenia s GPS z fixture DB; zariadenia s `gps_pending = 1` vynechá; kategórie a otváracie hodiny sú namapované; neznámy slug sa ignoruje |
+| `SQLiteVenueRepository` | načíta všetky zariadenia s GPS z fixture DB; zariadenia s `gps_pending = 1` vynechá; kategórie a otváracie hodiny sú namapované (vrátane `closes < opens`, §8.10); NULL `street`/`city` sa namapuje na `""` (§8.11); zariadenia 8 a 9 z fixture DB (neznáma kategória, §8.2) sa načítajú s prázdnymi, resp. zníženými kategóriami |
 | `MapViewModel` | prázdny filter → všetky; filter kategórie; filter vzdialenosti (hraničné hodnoty 0,5 a 20 km); bez polohy → filter vzdialenosti sa neaplikuje |
 | `NavigationService` | presný tvar URL pre všetky 3 aplikácie; `availableApps` s mockom `URLOpening` (iba Apple / Apple + Google / všetky tri) |
 
