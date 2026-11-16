@@ -363,6 +363,8 @@ def test_fixture_db_contents():
     assert rows(path, "SELECT COUNT(*) FROM venues WHERE id NOT IN (SELECT venue_id FROM opening_hours)")[0][0] >= 1
     # gps_pending <=> lat IS NULL
     assert rows(path, "SELECT COUNT(*) FROM venues WHERE (gps_pending = 1) <> (lat IS NULL)") == [(0,)]
+    # a venue with GPS whose street and city are NULL (section 8.11)
+    assert rows(path, "SELECT COUNT(*) FROM venues WHERE gps_pending = 0 AND street IS NULL AND city IS NULL")[0][0] >= 1
 
 
 # --- build_db CLI ----------------------------------------------------------------------------------------------------

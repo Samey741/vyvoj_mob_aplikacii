@@ -156,6 +156,20 @@ FIXTURE_VENUES: list[dict] = [
         "gps_source": "apple_maps",
         "gps_pending": 0,
     },
+    {  # 10: NULL street and city -> mapped to "" by the app (section 8.11)
+        "id": 10,
+        "title": "Wellness Bez Adresy",
+        "categories": ["Wellness a relax"],
+        "street": "",
+        "city": None,
+        "phone": None,
+        "website": None,
+        "lat": 49.5938,
+        "lon": 17.2509,
+        "opening_hours": [],
+        "gps_source": "apple_maps",
+        "gps_pending": 0,
+    },
 ]
 
 
