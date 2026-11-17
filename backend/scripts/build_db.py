@@ -1,6 +1,6 @@
 """CLI that builds venues.sqlite from scraped venues (DESIGN.md sections 3.2, 3.3, 8.3, 8.4, 8.9, 9.1, 12).
 
-    python scripts/build_db.py --input data/venues_raw.json --output ../frontend/SportNav/Resources/venues.sqlite
+    python scripts/build_db.py --input data/venues_raw.json --output ../frontend/app/src/main/assets/venues.sqlite
 
 No environment variable is required. Optional (environment or `backend/.env`, see `.env.example`):
     NOMINATIM_EMAIL   contact e-mail sent to Nominatim as the `email` parameter (usage policy, section 8.3)

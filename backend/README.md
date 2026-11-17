@@ -7,14 +7,14 @@ Tento priečinok obsahuje jednorazový dev pipeline, ktorý vyrobí `venues.sqli
 - Python enrich script (OpenStreetMap Nominatim: GPS + otváracie hodiny) – DESIGN.md §3.2
 - export do SQLite podľa schémy – DESIGN.md §3.3
 
-Výsledný `venues.sqlite` sa kopíruje do app bundle v `frontend/`.
+Výsledný `venues.sqlite` sa kopíruje do `assets/` Android aplikácie (`frontend/app/src/main/assets/`).
 
 ## Spustenie
 
 ```
 cd backend
 pip install -r requirements.txt
-python scripts/build_db.py --input data/venues_raw.json --output ../frontend/SportNav/Resources/venues.sqlite
+python scripts/build_db.py --input data/venues_raw.json --output ../frontend/app/src/main/assets/venues.sqlite
 ```
 
 Pipeline nepotrebuje žiadny kľúč ani token. Voliteľne sa z prostredia alebo z `backend/.env`

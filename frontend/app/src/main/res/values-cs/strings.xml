@@ -1,0 +1,38 @@
+<resources>
+    <string name="app_name">SportNav</string>
+
+    <string name="category_fitness">Posilovny a silové tréninky</string>
+    <string name="category_pool">Bazény a vodní sporty</string>
+    <string name="category_yoga">Jóga a zdravotní cvičení</string>
+    <string name="category_climbing">Lezecké stěny</string>
+    <string name="category_racket">Raketové a míčové sporty</string>
+    <string name="category_group">Skupinové a taneční lekce</string>
+    <string name="category_wellness">Wellness a relax</string>
+
+    <string name="action_filter">Filtr</string>
+    <string name="action_my_location">Moje poloha</string>
+    <string name="action_close">Zavřít</string>
+
+    <string name="filter_title">Filtr</string>
+    <string name="filter_categories">Kategorie</string>
+    <string name="filter_categories_hint">Bez výběru se zobrazí všechny kategorie</string>
+    <string name="filter_distance">Vzdálenost</string>
+    <string name="filter_distance_value">%1$s km</string>
+    <string name="filter_distance_off">Filtr vzdálenosti je vypnutý, protože poloha není k dispozici</string>
+
+    <string name="venue_navigate">Navigovat</string>
+    <string name="venue_hours_today">Dnes: %1$s</string>
+    <string name="venue_hours_closed_today">Dnes zavřeno</string>
+    <string name="venue_hours_unavailable">Otevírací doba není k dispozici</string>
+    <string name="venue_attribution">Poloha a hodiny: © OpenStreetMap contributors</string>
+
+    <string name="nav_choose_title">Navigovat přes</string>
+    <string name="nav_google_maps">Google Maps</string>
+    <string name="nav_waze">Waze</string>
+    <string name="nav_other">Jiná mapová aplikace</string>
+    <string name="nav_no_app">Není nainstalována žádná mapová aplikace</string>
+
+    <string name="load_error">Data se nepodařilo načíst</string>
+    <string name="location_unavailable">Poloha zatím není k dispozici</string>
+    <string name="location_permission_denied">Oprávnění k poloze bylo zamítnuto, zobrazují se všechna zařízení</string>
+</resources>

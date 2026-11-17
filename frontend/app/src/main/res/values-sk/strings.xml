@@ -1,0 +1,38 @@
+<resources>
+    <string name="app_name">SportNav</string>
+
+    <string name="category_fitness">Posilňovne a silové tréningy</string>
+    <string name="category_pool">Bazény a vodné športy</string>
+    <string name="category_yoga">Joga a zdravotné cvičenie</string>
+    <string name="category_climbing">Lezecké steny</string>
+    <string name="category_racket">Raketové a loptové športy</string>
+    <string name="category_group">Skupinové a tanečné lekcie</string>
+    <string name="category_wellness">Wellness a relax</string>
+
+    <string name="action_filter">Filter</string>
+    <string name="action_my_location">Moja poloha</string>
+    <string name="action_close">Zavrieť</string>
+
+    <string name="filter_title">Filter</string>
+    <string name="filter_categories">Kategórie</string>
+    <string name="filter_categories_hint">Bez výberu sa zobrazia všetky kategórie</string>
+    <string name="filter_distance">Vzdialenosť</string>
+    <string name="filter_distance_value">%1$s km</string>
+    <string name="filter_distance_off">Filter vzdialenosti je vypnutý, pretože poloha nie je k dispozícii</string>
+
+    <string name="venue_navigate">Navigovať</string>
+    <string name="venue_hours_today">Dnes: %1$s</string>
+    <string name="venue_hours_closed_today">Dnes zatvorené</string>
+    <string name="venue_hours_unavailable">Otváracie hodiny nedostupné</string>
+    <string name="venue_attribution">Poloha a hodiny: © OpenStreetMap contributors</string>
+
+    <string name="nav_choose_title">Navigovať cez</string>
+    <string name="nav_google_maps">Google Maps</string>
+    <string name="nav_waze">Waze</string>
+    <string name="nav_other">Iná mapová aplikácia</string>
+    <string name="nav_no_app">Nie je nainštalovaná žiadna mapová aplikácia</string>
+
+    <string name="load_error">Dáta sa nepodarilo načítať</string>
+    <string name="location_unavailable">Poloha zatiaľ nie je k dispozícii</string>
+    <string name="location_permission_denied">Povolenie polohy bolo zamietnuté, zobrazujú sa všetky zariadenia</string>
+</resources>

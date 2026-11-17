@@ -1,0 +1,38 @@
+<resources>
+    <string name="app_name">SportNav</string>
+
+    <string name="category_fitness">Gyms and strength training</string>
+    <string name="category_pool">Pools and water sports</string>
+    <string name="category_yoga">Yoga and health exercise</string>
+    <string name="category_climbing">Climbing walls</string>
+    <string name="category_racket">Racket and ball sports</string>
+    <string name="category_group">Group and dance classes</string>
+    <string name="category_wellness">Wellness and relax</string>
+
+    <string name="action_filter">Filter</string>
+    <string name="action_my_location">My location</string>
+    <string name="action_close">Close</string>
+
+    <string name="filter_title">Filter</string>
+    <string name="filter_categories">Categories</string>
+    <string name="filter_categories_hint">Nothing selected means all categories</string>
+    <string name="filter_distance">Distance</string>
+    <string name="filter_distance_value">%1$s km</string>
+    <string name="filter_distance_off">Distance filter is off because your location is not available</string>
+
+    <string name="venue_navigate">Navigate</string>
+    <string name="venue_hours_today">Today: %1$s</string>
+    <string name="venue_hours_closed_today">Closed today</string>
+    <string name="venue_hours_unavailable">Opening hours unavailable</string>
+    <string name="venue_attribution">Location and hours: © OpenStreetMap contributors</string>
+
+    <string name="nav_choose_title">Navigate with</string>
+    <string name="nav_google_maps">Google Maps</string>
+    <string name="nav_waze">Waze</string>
+    <string name="nav_other">Other map app</string>
+    <string name="nav_no_app">No map app is installed</string>
+
+    <string name="load_error">The data could not be loaded</string>
+    <string name="location_unavailable">Your location is not available yet</string>
+    <string name="location_permission_denied">Location permission denied, showing all venues</string>
+</resources>
